@@ -7,6 +7,11 @@ def solve(grid):
     """Solve an N x N Sudoku. `grid` is a list of N rows of N ints (0 = empty).
 
     Returns the solved grid as a list of lists, or None if unsolvable.
+
+    Uses a boolean one-hot encoding: x[r][c][d] is true iff cell (r, c) holds
+    digit d+1. Every rule becomes an "exactly one true" cardinality constraint,
+    which Z3's SAT/pseudo-boolean core handles much faster than the integer
+    Distinct encoding on hard or under-constrained puzzles.
     """
     n = len(grid)
     k = isqrt(n)
@@ -15,37 +20,43 @@ def solve(grid):
     if any(len(row) != n for row in grid):
         raise ValueError("grid must be square (N rows of N columns)")
 
-    # One integer variable per cell, each constrained to 1..N.
-    cells = [[z3.Int(f"c_{r}_{c}") for c in range(n)] for r in range(n)]
+    # x[r][c][d] is true iff cell (r, c) contains digit d+1.
+    x = [[[z3.Bool(f"x_{r}_{c}_{d}") for d in range(n)]
+          for c in range(n)] for r in range(n)]
 
     s = z3.Solver()
 
+    def exactly_one(bools):
+        return z3.PbEq([(b, 1) for b in bools], 1)
+
+    # Each cell holds exactly one digit.
     for r in range(n):
         for c in range(n):
-            s.add(cells[r][c] >= 1, cells[r][c] <= n)
+            s.add(exactly_one(x[r][c]))
 
-    # Rows and columns must each contain distinct values.
-    for i in range(n):
-        s.add(z3.Distinct(cells[i]))               # row i
-        s.add(z3.Distinct([cells[r][i] for r in range(n)]))  # column i
+    # Each digit appears exactly once per row, column, and k x k box.
+    for d in range(n):
+        for r in range(n):
+            s.add(exactly_one([x[r][c][d] for c in range(n)]))
+        for c in range(n):
+            s.add(exactly_one([x[r][c][d] for r in range(n)]))
+        for br in range(0, n, k):
+            for bc in range(0, n, k):
+                s.add(exactly_one(
+                    [x[br + dr][bc + dc][d] for dr in range(k) for dc in range(k)]))
 
-    # Each k x k box must contain distinct values.
-    for br in range(0, n, k):
-        for bc in range(0, n, k):
-            box = [cells[br + dr][bc + dc] for dr in range(k) for dc in range(k)]
-            s.add(z3.Distinct(box))
-
-    # Pin the given clues. This is the only part of the spec that is specific to the given example.
+    # Pin the given clues.
     for r in range(n):
         for c in range(n):
             if grid[r][c] != 0:
-                s.add(cells[r][c] == grid[r][c])
+                s.add(x[r][c][grid[r][c] - 1])
 
     if s.check() != z3.sat:
         return None
 
     m = s.model()
-    return [[m[cells[r][c]].as_long() for c in range(n)] for r in range(n)]
+    return [[next(d + 1 for d in range(n) if z3.is_true(m[x[r][c][d]]))
+             for c in range(n)] for r in range(n)]
 
 
 def format_grid(grid):
